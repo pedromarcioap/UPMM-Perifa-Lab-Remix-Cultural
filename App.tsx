@@ -57,6 +57,7 @@ import { ProfileDashboard } from './components/ProfileDashboard';
 import { AuthModal } from './components/AuthModal';
 import { CommunitySpotlight } from './components/CommunitySpotlight';
 import { AchievementCelebration } from './components/AchievementCelebration';
+import { RemixPodium } from './components/RemixPodium';
 import { AchievementEvent } from './types';
 import { 
   seedInitialFirestoreData, 
@@ -866,6 +867,15 @@ const App: React.FC = () => {
           <Link to="/ranking" className="flex items-center space-x-3 p-3 rounded-2xl hover:bg-[#FFB800]/20 text-[#FFB800] transition">
             <Trophy size={20} /> <span className="font-bold">Ranking da Batalha</span>
           </Link>
+          <Link to="/podium-remixes" className="flex items-center justify-between p-3 rounded-2xl hover:bg-white/10 text-white transition group">
+            <div className="flex items-center space-x-3">
+              <Crown size={20} className="text-[#FFB800] group-hover:scale-110 transition-transform" />
+              <span className="font-bold">Pódium de Remixes</span>
+            </div>
+            <span className="text-[8px] bg-[#FFB800] text-[#2D2A26] px-2 py-0.5 rounded-full font-black uppercase shadow">
+              Top
+            </span>
+          </Link>
           <Link to="/battle" className="flex items-center space-x-3 p-3 rounded-2xl hover:bg-white/10 transition">
             <Sword size={20} /> <span className="font-bold">Arena de Batalha</span>
           </Link>
@@ -1077,6 +1087,20 @@ const App: React.FC = () => {
           />
           <Route path="/map" element={<MapView photos={photos} graffitiSpots={graffitiSpots} onAddSpot={handleAddSpot} currentUser={currentUser} onRequireLogin={() => { setAuthModalTab('login'); setIsLoginModalOpen(true); }} comments={comments} onOpenComments={handleOpenComments} />} />
           <Route path="/ranking" element={<BattleRanking photos={photos} users={users} currentUser={currentUser} comments={comments} onOpenComments={openCommentsForPhoto} onRequireLogin={() => { setAuthModalTab('login'); setIsLoginModalOpen(true); }} initialTab="all" />} />
+          <Route 
+            path="/podium-remixes" 
+            element={
+              <RemixPodium 
+                photos={photos} 
+                users={users} 
+                currentUser={currentUser} 
+                comments={comments} 
+                onOpenComments={openCommentsForPhoto} 
+                onRequireLogin={() => { setAuthModalTab('login'); setIsLoginModalOpen(true); }} 
+              />
+            } 
+          />
+          <Route path="/remix-podium" element={<Navigate to="/podium-remixes" replace />} />
           <Route path="/top-artistas" element={<BattleRanking photos={photos} users={users} currentUser={currentUser} comments={comments} onOpenComments={openCommentsForPhoto} onRequireLogin={() => { setAuthModalTab('login'); setIsLoginModalOpen(true); }} initialTab="artists" />} />
           <Route path="/battle" element={<VibeBattle photos={photos} onVoteBattle={handleVoteBattle} onRequireLogin={(reason) => openAuthModal('login', reason || 'Para votar na Batalha 1v1 e pontuar no Ranking da Quebrada, entre com seu perfil ou Google.')} currentUser={currentUser} />} />
           <Route path="/lineage/:photoId" element={<LineageView photos={photos} comments={comments} onOpenComments={openCommentsForPhoto} />} />
@@ -1534,6 +1558,13 @@ const Feed: React.FC<{
           >
             <Flame size={13} />
             <span>Desafios Semanais</span>
+          </Link>
+          <Link 
+            to="/podium-remixes" 
+            className="inline-flex items-center gap-1.5 bg-gradient-to-r from-amber-400 to-[#FFB800] text-[#2D2A26] hover:scale-105 text-[10px] font-black uppercase px-3.5 py-2 rounded-2xl transition shadow-sm font-black"
+          >
+            <Crown size={13} />
+            <span>Pódium Remixes</span>
           </Link>
           <Link 
             to="/battle" 

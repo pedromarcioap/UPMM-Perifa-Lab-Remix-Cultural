@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { PhotoBase, User, Comment } from '../types';
 import { BADGES } from '../constants';
+import { RemixPodium } from './RemixPodium';
 
 interface BattleRankingProps {
   photos: PhotoBase[];
@@ -36,10 +37,10 @@ interface BattleRankingProps {
   comments: Comment[];
   onOpenComments: (photo: PhotoBase) => void;
   onRequireLogin: () => void;
-  initialTab?: 'all' | 'base' | 'remix' | 'artists';
+  initialTab?: 'all' | 'base' | 'remix' | 'artists' | 'podium';
 }
 
-type TabType = 'all' | 'base' | 'remix' | 'artists';
+type TabType = 'all' | 'base' | 'remix' | 'artists' | 'podium';
 type SortMetric = 'wins' | 'winRate' | 'duels' | 'streak' | 'vibes';
 
 export const BattleRanking: React.FC<BattleRankingProps> = ({
@@ -317,6 +318,19 @@ export const BattleRanking: React.FC<BattleRankingProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('podium')}
+            className={`px-4 py-2.5 rounded-2xl font-black uppercase text-xs transition flex items-center space-x-2 ${
+              activeTab === 'podium'
+                ? 'bg-gradient-to-r from-amber-500 to-[#FFB800] text-[#2D2A26] shadow-md font-black'
+                : 'bg-amber-100/70 text-amber-900 hover:bg-amber-100'
+            }`}
+          >
+            <Trophy size={15} className="text-amber-700" />
+            <span>Pódium Remixes</span>
+            <span className="bg-[#2D2A26] text-[#FFB800] text-[8px] px-1.5 py-0.5 rounded-full font-black">TOP</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('artists')}
             className={`px-4 py-2.5 rounded-2xl font-black uppercase text-xs transition flex items-center space-x-2 ${
               activeTab === 'artists'
@@ -329,7 +343,7 @@ export const BattleRanking: React.FC<BattleRankingProps> = ({
           </button>
         </div>
 
-        {activeTab !== 'artists' && (
+        {activeTab !== 'artists' && activeTab !== 'podium' && (
           <div className="flex items-center space-x-2">
             <span className="text-[10px] font-black uppercase text-gray-400">Ordenar:</span>
             <select
@@ -348,7 +362,7 @@ export const BattleRanking: React.FC<BattleRankingProps> = ({
       </div>
 
       {/* Filter and Search Bar for Photos/Remixes */}
-      {activeTab !== 'artists' && (
+      {activeTab !== 'artists' && activeTab !== 'podium' && (
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
             <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -378,7 +392,16 @@ export const BattleRanking: React.FC<BattleRankingProps> = ({
       )}
 
       {/* Content Switcher */}
-      {activeTab === 'artists' ? (
+      {activeTab === 'podium' ? (
+        <RemixPodium
+          photos={photos}
+          users={users}
+          currentUser={currentUser}
+          comments={comments}
+          onOpenComments={onOpenComments}
+          onRequireLogin={onRequireLogin}
+        />
+      ) : activeTab === 'artists' ? (
         /* Top Artistas Tab view */
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -486,6 +509,31 @@ export const BattleRanking: React.FC<BattleRankingProps> = ({
       ) : (
         /* Photos & Remixes Battle Ranking */
         <div className="space-y-8">
+          {activeTab === 'remix' && (
+            <div className="bg-gradient-to-r from-[#2D2A26] to-[#1F1D1A] text-white rounded-3xl p-5 border border-[#FFB800]/40 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-[#FFB800] text-[#2D2A26] flex items-center justify-center font-black shrink-0 shadow-lg">
+                  <Trophy size={24} />
+                </div>
+                <div>
+                  <h4 className="font-black text-sm uppercase tracking-tight text-white flex items-center gap-2">
+                    <span>Pódium Olímpico de Remixes</span>
+                    <span className="bg-[#FFB800] text-[#2D2A26] text-[8px] font-black uppercase px-2 py-0.5 rounded-full">Destaque</span>
+                  </h4>
+                  <p className="text-xs text-gray-300">
+                    Veja os 3 melhores remixes com pedestais 3D, estatísticas de batalha e comparativo antes vs. depois!
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveTab('podium')}
+                className="px-5 py-2.5 bg-[#FFB800] hover:bg-amber-400 text-[#2D2A26] font-black text-xs uppercase rounded-xl transition shadow shrink-0 cursor-pointer"
+              >
+                Ver Pódium Completo
+              </button>
+            </div>
+          )}
+
           {/* Top 3 Podium Cards */}
           {top3.length > 0 && (
             <div>
