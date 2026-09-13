@@ -1,0 +1,11 @@
+{
+  "name": "UPMM Periferia Art Studio",
+  "description": "Uma plataforma comunitária para valorização e co-criação da estética visual das periferias brasileiras.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
