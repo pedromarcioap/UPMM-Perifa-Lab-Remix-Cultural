@@ -92,6 +92,7 @@ export const AdminChallengesCMS: React.FC<AdminChallengesCMSProps> = ({
   const [newTagInput, setNewTagInput] = useState('');
   const [showLivePreview, setShowLivePreview] = useState(false);
   const [formSuccessMessage, setFormSuccessMessage] = useState<string | null>(null);
+  const [formErrorMessage, setFormErrorMessage] = useState<string | null>(null);
 
   // Winner selection state
   const [selectedChallengeForWinner, setSelectedChallengeForWinner] = useState<string>(
@@ -208,13 +209,14 @@ export const AdminChallengesCMS: React.FC<AdminChallengesCMSProps> = ({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
-      alert('Por favor, informe o título do desafio.');
+      setFormErrorMessage('Por favor, informe o título do desafio.');
       return;
     }
     if (!description.trim()) {
-      alert('Por favor, adicione uma descrição detalhada para orientar os artistas.');
+      setFormErrorMessage('Por favor, adicione uma descrição detalhada para orientar os artistas.');
       return;
     }
+    setFormErrorMessage(null);
 
     const challengeId = editingChallengeId || `ch_${Date.now()}`;
     const newChallenge: WeeklyChallenge = {
@@ -253,9 +255,7 @@ export const AdminChallengesCMS: React.FC<AdminChallengesCMSProps> = ({
 
   // Confirm delete
   const handleDelete = (challenge: WeeklyChallenge) => {
-    if (window.confirm(`Tem certeza que deseja remover o desafio "${challenge.title}"? Esta ação removerá a diretriz e sincronizará no Firestore.`)) {
-      onDeleteChallenge(challenge.id);
-    }
+    onDeleteChallenge(challenge.id);
   };
 
   // Filtered challenges in CMS list
@@ -651,6 +651,18 @@ export const AdminChallengesCMS: React.FC<AdminChallengesCMSProps> = ({
                 <CheckCircle2 size={16} />
                 <span>{formSuccessMessage}</span>
               </span>
+            </div>
+          )}
+
+          {formErrorMessage && (
+            <div className="bg-red-500 text-white p-4 rounded-2xl font-black text-xs uppercase flex items-center justify-between shadow-lg">
+              <span className="flex items-center gap-2">
+                <AlertCircle size={16} />
+                <span>{formErrorMessage}</span>
+              </span>
+              <button type="button" onClick={() => setFormErrorMessage(null)} className="text-white/80 hover:text-white">
+                <X size={16} />
+              </button>
             </div>
           )}
 

@@ -131,10 +131,8 @@ export const BadgeCMS: React.FC<BadgeCMSProps> = ({
     }, 600);
   };
 
-  const handleDelete = (badgeId: string, badgeName: string) => {
-    if (confirm(`Tem certeza que deseja remover a insígnia "${badgeName}"?`)) {
-      onDeleteBadge(badgeId);
-    }
+  const handleDelete = (badgeId: string, _badgeName: string) => {
+    onDeleteBadge(badgeId);
   };
 
   return (

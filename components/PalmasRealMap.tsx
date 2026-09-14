@@ -26,9 +26,6 @@ import { PhotoBase, GraffitiSpot, User, Comment } from '../types';
 import L from 'leaflet';
 import { UrbanRadarMapsGrounding } from './UrbanRadarMapsGrounding';
 
-// Import Google Maps React components
-import { APIProvider, Map as GoogleMap, AdvancedMarker, InfoWindow, useMap } from '@vis.gl/react-google-maps';
-
 export interface TerritoryQuickJump {
   id: string;
   name: string;
@@ -128,20 +125,6 @@ interface PalmasRealMapProps {
   onOpenComments?: (targetId: string, targetType: 'photo' | 'spot') => void;
 }
 
-// Controller helper for Google Map camera updates
-const GoogleMapCameraController: React.FC<{ targetCoords: { lat: number; lng: number; zoom?: number } | null }> = ({ targetCoords }) => {
-  const map = useMap();
-  useEffect(() => {
-    if (map && targetCoords) {
-      map.panTo({ lat: targetCoords.lat, lng: targetCoords.lng });
-      if (targetCoords.zoom) {
-        map.setZoom(targetCoords.zoom);
-      }
-    }
-  }, [map, targetCoords]);
-  return null;
-};
-
 export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
   photos,
   graffitiSpots,
@@ -156,56 +139,6 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
   onOpenComments
 }) => {
   const navigate = useNavigate();
-  const googleApiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
-  // Default to OpenStreetMap to prevent ApiTargetBlockedMapError when the project key has API restrictions
-  const [useGoogleMaps, setUseGoogleMaps] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem('gmaps_blocked') !== 'true' && false;
-    } catch {
-      return false;
-    }
-  });
-  const [googleMapsBlocked, setGoogleMapsBlocked] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem('gmaps_blocked') === 'true';
-    } catch {
-      return false;
-    }
-  });
-  const [googleMapsErrorMsg, setGoogleMapsErrorMsg] = useState<string | null>(() => {
-    try {
-      return sessionStorage.getItem('gmaps_blocked') === 'true'
-        ? 'A chave de API configurada no projeto possui restrições que bloqueiam a "Maps JavaScript API" (ApiTargetBlockedMapError). O mapa está ativo e funcionando via OpenStreetMap.'
-        : null;
-    } catch {
-      return null;
-    }
-  });
-
-  // Catch any Google Maps authentication / API target restriction errors globally
-  useEffect(() => {
-    const handleAuthFailure = () => {
-      console.warn('Google Maps API auth/restriction error detected (ApiTargetBlockedMapError). Falling back to OpenStreetMap.');
-      try {
-        sessionStorage.setItem('gmaps_blocked', 'true');
-      } catch {}
-      setGoogleMapsBlocked(true);
-      setGoogleMapsErrorMsg('A chave de API configurada no projeto possui restrições que bloqueiam a "Maps JavaScript API" (ApiTargetBlockedMapError). O mapa continuará funcionando via OpenStreetMap.');
-      setUseGoogleMaps(false);
-    };
-
-    window.addEventListener('gmaps_auth_failure', handleAuthFailure);
-    const prevAuthFailure = (window as unknown as { gm_authFailure?: () => void }).gm_authFailure;
-    (window as unknown as { gm_authFailure?: () => void }).gm_authFailure = () => {
-      handleAuthFailure();
-      if (prevAuthFailure) prevAuthFailure();
-    };
-
-    return () => {
-      window.removeEventListener('gmaps_auth_failure', handleAuthFailure);
-      (window as unknown as { gm_authFailure?: () => void }).gm_authFailure = prevAuthFailure;
-    };
-  }, []);
 
   const [activeTerritory, setActiveTerritory] = useState<string>('t-all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -341,7 +274,6 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
   // LEAFLET INITIALIZATION & UPDATES
   // -------------------------------------------------------------
   useEffect(() => {
-    if (useGoogleMaps) return;
     if (!leafletContainerRef.current) return;
 
     if (!leafletMapRef.current) {
@@ -373,11 +305,11 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
     return () => {
       // Keep map instance unless unmounted
     };
-  }, [useGoogleMaps]);
+  }, []);
 
   // Update Leaflet markers whenever photos, spots, or filters change
   useEffect(() => {
-    if (useGoogleMaps || !leafletMapRef.current || !leafletMarkersLayerRef.current) return;
+    if (!leafletMapRef.current || !leafletMarkersLayerRef.current) return;
 
     const markersLayer = leafletMarkersLayerRef.current;
     markersLayer.clearLayers();
@@ -527,16 +459,16 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
       });
       L.marker([userLocation.lat, userLocation.lng], { icon: userIcon }).addTo(markersLayer);
     }
-  }, [useGoogleMaps, photos, graffitiSpots, filterType, activePhoto, userLocation, onSelectPhoto]);
+  }, [photos, graffitiSpots, filterType, activePhoto, userLocation, onSelectPhoto]);
 
   // Pan Leaflet map to targetView
   useEffect(() => {
-    if (!useGoogleMaps && leafletMapRef.current && targetView) {
+    if (leafletMapRef.current && targetView) {
       leafletMapRef.current.flyTo([targetView.lat, targetView.lng], targetView.zoom || 14, {
         duration: 1.2
       });
     }
-  }, [targetView, useGoogleMaps]);
+  }, [targetView]);
 
   // Filtered photos based on search query
   const filteredPhotos = photos.filter(p => {
@@ -582,27 +514,6 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
             <Compass size={16} className="text-[#FFB800]" />
             <span>Radar Google Maps</span>
           </button>
-
-          {/* Map Engine Toggle */}
-          {googleApiKey && (
-            <button
-              onClick={() => {
-                if (!useGoogleMaps && googleMapsBlocked) {
-                  setGoogleMapsBlocked(false);
-                }
-                setUseGoogleMaps(!useGoogleMaps);
-              }}
-              className={`px-4 py-3 rounded-2xl border shadow-sm text-[10px] font-black uppercase flex items-center space-x-2 transition ${
-                useGoogleMaps 
-                  ? 'bg-[#2D2A26] text-[#FFB800] border-[#2D2A26]' 
-                  : 'bg-white text-[#2D2A26] border-gray-200 hover:bg-gray-50'
-              }`}
-              title="Alternar motor do mapa"
-            >
-              <Layers size={14} className={useGoogleMaps ? 'text-[#FFB800]' : 'text-gray-400'} />
-              <span>{useGoogleMaps ? 'Google Maps (Ativo)' : 'OpenStreetMap (Ativo)'}</span>
-            </button>
-          )}
 
           {/* Mark Point Button */}
           <button 
@@ -796,189 +707,10 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
         </div>
       )}
 
-      {/* Notice if Google Maps is blocked by GCP policy / API restrictions */}
-      {googleMapsBlocked && (
-        <div className="bg-amber-50 border-2 border-amber-300 text-amber-900 px-5 py-3 rounded-2xl flex items-start justify-between shadow-sm animate-fadeIn">
-          <div className="flex items-start space-x-3">
-            <Info size={18} className="text-amber-600 shrink-0 mt-0.5" />
-            <div className="text-xs">
-              <p className="font-bold">Aviso sobre Google Maps (ApiTargetBlockedMapError):</p>
-              <p className="text-[11px] text-amber-800 mt-0.5">
-                {googleMapsErrorMsg || 'A chave de API configurada no projeto possui restrições ou a Maps JavaScript API não foi ativada no Google Cloud Console.'}
-              </p>
-              <p className="text-[10px] text-amber-700 mt-1 font-medium">
-                O motor <strong>OpenStreetMap (Leaflet)</strong> foi mantido ativo e está 100% funcional com todas as fotos, territórios e remixes de Palmas.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setGoogleMapsBlocked(false)}
-            className="text-amber-500 hover:text-amber-800 p-1 ml-2 shrink-0"
-            title="Fechar aviso"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-
       {/* MAP VIEW CONTAINER */}
       <div className="relative h-[65vh] min-h-[500px] w-full rounded-[3rem] overflow-hidden border-8 border-white shadow-2xl bg-gray-100">
-        {useGoogleMaps && googleApiKey && !googleMapsBlocked ? (
-          // ================= GOOGLE MAPS ENGINE =================
-          <APIProvider 
-            apiKey={googleApiKey} 
-            libraries={['marker']}
-            onError={(err) => {
-              console.warn('Google Maps API failed to load:', err);
-              try {
-                sessionStorage.setItem('gmaps_blocked', 'true');
-              } catch {}
-              setGoogleMapsBlocked(true);
-              setGoogleMapsErrorMsg('A chave de API não pôde inicializar a Maps JavaScript API (ApiTargetBlockedMapError). Alternando automaticamente para OpenStreetMap.');
-              setUseGoogleMaps(false);
-            }}
-          >
-            <GoogleMap
-              style={{ width: '100%', height: '100%' }}
-              mapId="DEMO_MAP_ID"
-              defaultCenter={{ lat: -10.2500, lng: -48.3200 }}
-              defaultZoom={12}
-              gestureHandling="greedy"
-              disableDefaultUI={false}
-              internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-              onClick={(e) => {
-                if (isMarkingMode && e.detail.latLng) {
-                  handleTriggerSpotCreation(e.detail.latLng.lat, e.detail.latLng.lng);
-                }
-              }}
-            >
-              <GoogleMapCameraController targetCoords={targetView} />
-
-              {/* Google Maps Photo & Remix Markers */}
-              {(filterType === 'all' || filterType === 'base' || filterType === 'remix') &&
-                photos.filter(p => {
-                  if (!p.location) return false;
-                  if (filterType === 'all') return true;
-                  if (filterType === 'base') return p.type !== 'remix';
-                  if (filterType === 'remix') return p.type === 'remix';
-                  return false;
-                }).map((photo) => {
-                  const isRemix = photo.type === 'remix';
-                  const localRemixes = getRemixesForPhoto(photo.id);
-                  const lat = isRemix ? photo.location!.lat + 0.0007 : photo.location!.lat;
-                  const lng = isRemix ? photo.location!.lng + 0.0007 : photo.location!.lng;
-                  return (
-                    <AdvancedMarker
-                      key={photo.id}
-                      position={{ lat, lng }}
-                      onClick={() => {
-                        setActivePhoto(photo);
-                        setComparisonView('remix');
-                        setActiveSpot(null);
-                        onSelectPhoto(photo);
-                      }}
-                    >
-                      <div className="group cursor-pointer">
-                        <div className={`bg-white p-1 rounded-2xl shadow-2xl border-4 transition group-hover:scale-125 w-12 h-12 overflow-hidden ${
-                          isRemix ? 'border-purple-600 shadow-purple-500/40' : 'border-[#FFB800]'
-                        }`}>
-                          <img 
-                            src={photo.imageUrl} 
-                            alt={photo.title}
-                            referrerPolicy="no-referrer"
-                            onError={(e) => {
-                              e.currentTarget.onerror = null;
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1578301978693-85fa9c0320b9?auto=format&fit=crop&w=400&q=80';
-                            }}
-                            className="w-full h-full object-cover rounded-xl"
-                          />
-                        </div>
-                        <div className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full mt-1 text-center shadow-md ${
-                          isRemix 
-                            ? 'bg-purple-600 text-white' 
-                            : (localRemixes.length > 0 ? 'bg-[#1E1B4B] text-purple-200' : 'bg-[#2D2A26] text-[#FFB800]')
-                        }`}>
-                          {isRemix ? '★ Remix' : (localRemixes.length > 0 ? `✨ ${localRemixes.length} remixes` : photo.location?.neighborhood)}
-                        </div>
-                      </div>
-                    </AdvancedMarker>
-                  );
-                })}
-
-              {/* Google Maps Graffiti Spots */}
-              {(filterType === 'all' || filterType === 'spots') &&
-                graffitiSpots.map((spot) => (
-                  <AdvancedMarker
-                    key={spot.id}
-                    position={{ lat: spot.lat, lng: spot.lng }}
-                    onClick={() => {
-                      setActiveSpot(spot);
-                      setActivePhoto(null);
-                    }}
-                  >
-                    <div className={`p-2.5 rounded-full shadow-2xl border-2 border-white cursor-pointer transition hover:scale-125 ${
-                      spot.type === 'permitido' ? 'bg-green-500 text-white' : 'bg-blue-500 text-white'
-                    }`}>
-                      <Paintbrush size={16} />
-                    </div>
-                  </AdvancedMarker>
-                ))}
-
-              {/* Active Photo InfoWindow */}
-              {activePhoto && activePhoto.location && (
-                <InfoWindow
-                  position={{ lat: activePhoto.location.lat, lng: activePhoto.location.lng }}
-                  onCloseClick={() => setActivePhoto(null)}
-                >
-                  <div className="max-w-[270px] p-1 text-[#2D2A26]">
-                    <img 
-                      src={activePhoto.imageUrl} 
-                      alt={activePhoto.title}
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        e.currentTarget.onerror = null;
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1578301978693-85fa9c0320b9?auto=format&fit=crop&w=400&q=80';
-                      }}
-                      className="w-full h-32 object-cover rounded-xl mb-2"
-                    />
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
-                        activePhoto.type === 'remix' ? 'bg-purple-600 text-white' : 'bg-[#2D2A26] text-[#FFB800]'
-                      }`}>
-                        {activePhoto.type === 'remix' ? '★ Remix' : activePhoto.location.neighborhood}
-                      </span>
-                      <span className="text-[9px] text-gray-500 font-bold">★ {activePhoto.vibeCount} vibes</span>
-                    </div>
-                    <h4 className="font-bold text-sm text-[#2D2A26]">{activePhoto.title}</h4>
-                    <p className="text-[10px] text-gray-500 mb-2">por @{activePhoto.authorName}</p>
-                    
-                    {activePhoto.location.address && (
-                      <p className="text-[9px] text-gray-700 bg-gray-50 p-2 rounded-lg border border-gray-100 mb-3 flex items-start gap-1">
-                        <MapPin size={12} className="text-[#FFB800] shrink-0 mt-0.5" />
-                        <span>{activePhoto.location.address}</span>
-                      </p>
-                    )}
-
-                    <div className="flex gap-2">
-                      <a 
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${activePhoto.location.lat},${activePhoto.location.lng}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex-1 bg-[#FFB800] text-[#2D2A26] py-2 rounded-xl text-[9px] font-black uppercase text-center flex items-center justify-center gap-1 hover:bg-[#2D2A26] hover:text-white transition"
-                      >
-                        <Navigation2 size={12} />
-                        <span>Traçar Rota</span>
-                      </a>
-                    </div>
-                  </div>
-                </InfoWindow>
-              )}
-            </GoogleMap>
-          </APIProvider>
-        ) : (
-          // ================= LEAFLET / OSM REAL TILES ENGINE =================
-          <div ref={leafletContainerRef} className="w-full h-full z-10" />
-        )}
+        {/* ================= LEAFLET / OSM REAL TILES ENGINE ================= */}
+        <div ref={leafletContainerRef} className="w-full h-full z-10" />
 
         {/* Floating Indicator when Marking Mode is Active */}
         {isMarkingMode && (

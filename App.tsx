@@ -663,7 +663,6 @@ const App: React.FC = () => {
     } else {
       try {
         await navigator.clipboard.writeText(shareUrl);
-        alert('Link copiado para a área de transferência!');
       } catch (err) {
         console.error('Failed to copy: ', err);
       }
