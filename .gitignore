@@ -1,3 +1,13 @@
+# Environment files & secrets
+.env.*.local
+.env
+.env.*
+!.env.example
+*.local
+*.key
+*.pem
+*service-account*.json
+
 # Logs
 logs
 *.log
@@ -22,3 +32,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Configuração com chaves reais
+firebase-applet-config.json

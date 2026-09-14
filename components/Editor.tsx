@@ -22,6 +22,11 @@ import { AssetDrawer } from './AssetDrawer';
 import { AssetItem } from '../types/assets';
 import { ASSET_CATALOG } from '../constants/assetsCatalog';
 
+// Performance & Memory Guards for Canvas & Mobile
+const MAX_ASSET_DIMENSION = 512; // Downscale large assets to max 512px to prevent GPU out-of-memory
+const MAX_CACHE_ENTRIES = 40;   // Prevent memory leaks by evicting stale textures
+const MAX_LAYERS_LIMIT = 15;    // Defensive ceiling of simultaneous layers
+
 interface Layer {
   id: string;
   type: 'sticker' | 'animated-sticker' | 'text';
@@ -74,9 +79,30 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
   const [isDragOverCanvas, setIsDragOverCanvas] = useState(false);
   const [canvasToast, setCanvasToast] = useState<string | null>(null);
   
+  type RenderableAsset = HTMLImageElement | HTMLCanvasElement;
   const dragStartPos = useRef({ x: 0, y: 0 });
   const layerStartPos = useRef({ x: 0, y: 0 });
-  const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
+  const imageCache = useRef<Map<string, RenderableAsset>>(new Map());
+  const lastRenderTime = useRef<number>(0);
+  const lastUserInteraction = useRef<number>(Date.now());
+  const isDocumentVisible = useRef<boolean>(true);
+
+  // Track document visibility to pause animation loops when tab is hidden
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isDocumentVisible.current = !document.hidden;
+      if (!document.hidden) {
+        lastUserInteraction.current = Date.now();
+        drawCanvas();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  const touchActivity = () => {
+    lastUserInteraction.current = Date.now();
+  };
 
   useEffect(() => {
     if (!basePhoto) {
@@ -86,7 +112,35 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
 
   if (!basePhoto) return null;
 
-  const loadImage = (src: string): Promise<HTMLImageElement> => {
+  // Downscale high-resolution assets via offscreen canvas before main rendering
+  const downscaleAssetIfNeeded = (img: HTMLImageElement): RenderableAsset => {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    if (!w || !h || (w <= MAX_ASSET_DIMENSION && h <= MAX_ASSET_DIMENSION)) {
+      return img;
+    }
+
+    const scale = Math.min(MAX_ASSET_DIMENSION / w, MAX_ASSET_DIMENSION / h);
+    const targetW = Math.max(1, Math.round(w * scale));
+    const targetH = Math.max(1, Math.round(h * scale));
+
+    try {
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = targetW;
+      offCanvas.height = targetH;
+      const offCtx = offCanvas.getContext('2d');
+      if (offCtx) {
+        offCtx.imageSmoothingEnabled = true;
+        offCtx.imageSmoothingQuality = 'medium';
+        offCtx.drawImage(img, 0, 0, targetW, targetH);
+        return offCanvas;
+      }
+    } catch (_) {}
+
+    return img;
+  };
+
+  const loadImage = (src: string): Promise<RenderableAsset> => {
     if (imageCache.current.has(src)) return Promise.resolve(imageCache.current.get(src)!);
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -108,16 +162,27 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
       }
 
       img.onload = () => {
-        imageCache.current.set(src, img);
-        resolve(img);
+        // Evict oldest cache entry if limit reached to protect mobile memory
+        if (imageCache.current.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = imageCache.current.keys().next().value;
+          if (firstKey) imageCache.current.delete(firstKey);
+        }
+        const processed = downscaleAssetIfNeeded(img);
+        imageCache.current.set(src, processed);
+        resolve(processed);
       };
       img.onerror = () => {
         // Fallback without crossOrigin if CORS was the issue
         if (img.crossOrigin) {
           const fallbackImg = new Image();
           fallbackImg.onload = () => {
-            imageCache.current.set(src, fallbackImg);
-            resolve(fallbackImg);
+            if (imageCache.current.size >= MAX_CACHE_ENTRIES) {
+              const firstKey = imageCache.current.keys().next().value;
+              if (firstKey) imageCache.current.delete(firstKey);
+            }
+            const processed = downscaleAssetIfNeeded(fallbackImg);
+            imageCache.current.set(src, processed);
+            resolve(processed);
           };
           fallbackImg.onerror = (e) => {
             console.error(`Falha ao carregar mídia: ${src.substring(0, 50)}...`, e);
@@ -207,28 +272,48 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
     }
   };
 
-  // Animation Loop for GIF support on canvas
+  // Animation Loop for GIF support on canvas with 24-30 FPS throttling and Idle Freezing
   useEffect(() => {
-    const loop = async () => {
-      await drawCanvas();
-      animationFrameRef.current = requestAnimationFrame(loop);
-    };
-    
-    // We only need the loop if there are animated stickers
+    let isCancelled = false;
+    const TARGET_FPS = 30;
+    const FRAME_INTERVAL = 1000 / TARGET_FPS; // ~33.3ms
+
+    // Static rendering if no animated layers exist to save CPU & battery
     const hasAnimated = layers.some(l => l.type === 'animated-sticker');
-    
-    if (hasAnimated) {
-      animationFrameRef.current = requestAnimationFrame(loop);
-    } else {
+    if (!hasAnimated) {
       drawCanvas();
+      return;
     }
 
+    const loop = (timestamp: number) => {
+      if (isCancelled) return;
+
+      if (isDocumentVisible.current) {
+        const timeSinceLastFrame = timestamp - lastRenderTime.current;
+        const timeSinceInteraction = Date.now() - lastUserInteraction.current;
+
+        // When user is idle for > 8 seconds, throttle to 10 FPS (~100ms) to conserve mobile power
+        const currentInterval = timeSinceInteraction > 8000 ? 100 : FRAME_INTERVAL;
+
+        if (timeSinceLastFrame >= currentInterval) {
+          lastRenderTime.current = timestamp;
+          drawCanvas();
+        }
+      }
+
+      animationFrameRef.current = requestAnimationFrame(loop);
+    };
+
+    animationFrameRef.current = requestAnimationFrame(loop);
+
     return () => {
+      isCancelled = true;
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [filters, layers, selectedLayerId]);
 
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    touchActivity();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -258,6 +343,7 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
 
   const handleCanvasMouseMove = (e: React.MouseEvent) => {
     if (!isCanvasDragging || !selectedLayerId) return;
+    touchActivity();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -275,6 +361,12 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
   };
 
   const handleAddSticker = (url: string, isAnimated = false) => {
+    touchActivity();
+    if (layers.length >= MAX_LAYERS_LIMIT) {
+      setCanvasToast(`Limite de ${MAX_LAYERS_LIMIT} camadas atingido para preservar a fluidez.`);
+      setTimeout(() => setCanvasToast(null), 3000);
+      return;
+    }
     const newLayer: Layer = {
       id: Math.random().toString(36).substr(2, 9),
       type: isAnimated ? 'animated-sticker' : 'sticker',
@@ -291,6 +383,13 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
 
   // Posicionar imediatamente no centro geométrico do canvas sobre a foto base
   const handleSelectAsset = (asset: AssetItem) => {
+    touchActivity();
+    if (layers.length >= MAX_LAYERS_LIMIT) {
+      setCanvasToast(`Limite de ${MAX_LAYERS_LIMIT} camadas atingido para preservar a fluidez.`);
+      setTimeout(() => setCanvasToast(null), 3000);
+      return;
+    }
+
     const canvas = canvasRef.current;
     const centerX = canvas ? Math.round(canvas.width / 2) : 500;
     const centerY = canvas ? Math.round(canvas.height / 2) : 500;
@@ -316,7 +415,14 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
   // Handler de Soltar (Drop) diretamente sobre o canvas: insere o asset centralizado
   const handleCanvasDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    touchActivity();
     setIsDragOverCanvas(false);
+
+    if (layers.length >= MAX_LAYERS_LIMIT) {
+      setCanvasToast(`Limite defensivo de ${MAX_LAYERS_LIMIT} camadas atingido.`);
+      setTimeout(() => setCanvasToast(null), 3000);
+      return;
+    }
 
     try {
       const rawData = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('upmm/asset');
@@ -360,7 +466,13 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
   };
 
   const handleAddText = () => {
+    touchActivity();
     if (!inputText.trim()) return;
+    if (layers.length >= MAX_LAYERS_LIMIT) {
+      setCanvasToast(`Limite de ${MAX_LAYERS_LIMIT} camadas atingido para preservar a fluidez.`);
+      setTimeout(() => setCanvasToast(null), 3000);
+      return;
+    }
     const newLayer: Layer = {
       id: Math.random().toString(36).substr(2, 9),
       type: 'text',
@@ -407,7 +519,8 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
       navigate(`/profile/${user.id}`);
     } catch (e) {
       console.error("Erro ao salvar remix:", e);
-      alert("Houve um erro técnico ao gerar sua arte. Tente novamente.");
+      setCanvasToast("Erro ao processar imagem para salvar. Tente reduzir o número de camadas.");
+      setTimeout(() => setCanvasToast(null), 4000);
     } finally {
       setIsRendering(false);
     }
@@ -424,6 +537,23 @@ const Editor: React.FC<{ photos: PhotoBase[], onSave: (remix: PhotoBase) => void
           <p className="text-[8px] font-bold text-gray-400">@{basePhoto.authorName} • {basePhoto.title}</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Indicador defensivo de camadas em tempo real */}
+          <div 
+            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase border transition ${
+              layers.length >= MAX_LAYERS_LIMIT 
+                ? 'bg-red-500/20 text-red-300 border-red-500/40' 
+                : layers.length >= 10 
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' 
+                : 'bg-white/10 text-gray-300 border-white/10'
+            }`}
+            title={`Limite máximo recomendado de ${MAX_LAYERS_LIMIT} camadas ativas no canvas`}
+          >
+            <span className="text-gray-400 text-[9px]">Camadas:</span>
+            <span className={layers.length >= MAX_LAYERS_LIMIT ? 'text-red-400 font-black' : 'text-[#FFB800]'}>
+              {layers.length}/{MAX_LAYERS_LIMIT}
+            </span>
+          </div>
+
           <button 
             type="button"
             onClick={() => setIsAssetDrawerOpen(true)}

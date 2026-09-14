@@ -8,7 +8,7 @@ import {
   deleteDoc 
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
-import { User, PhotoBase, GraffitiSpot, Comment, WeeklyChallenge, RemixNotification, Badge } from './types';
+import { User, UserLevel, PhotoBase, GraffitiSpot, Comment, WeeklyChallenge, RemixNotification, Badge } from './types';
 import { 
   INITIAL_USERS, 
   INITIAL_PHOTOS, 
@@ -18,70 +18,261 @@ import {
   BADGES
 } from './constants';
 
-// Initial Seeding to Firestore if collections are empty
+/**
+ * Exponential Backoff Retry Utility
+ * Retries network mutations with jitter to withstand intermittent packet loss or mobile network switching.
+ */
+export async function withRetry<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3,
+  initialDelayMs = 400
+): Promise<T> {
+  let attempt = 0;
+  let delay = initialDelayMs;
+
+  while (attempt < maxRetries) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      attempt++;
+      if (attempt >= maxRetries) {
+        throw error;
+      }
+      const jitter = Math.random() * 150;
+      await new Promise(resolve => setTimeout(resolve, delay + jitter));
+      delay *= 2;
+    }
+  }
+  throw new Error('Número máximo de tentativas de sincronização excedido');
+}
+
+/**
+ * Schema Normalizers
+ * Enforce strict contract typing between raw Firestore document dictionaries and application TypeScript interfaces.
+ */
+export function normalizeUser(raw: any): User {
+  return {
+    id: String(raw.id || ''),
+    name: String(raw.name || 'Artista UPMM'),
+    username: raw.username ? String(raw.username) : undefined,
+    email: raw.email ? String(raw.email) : undefined,
+    avatar: String(raw.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=400&q=80'),
+    bio: String(raw.bio || ''),
+    vibe: typeof raw.vibe === 'number' ? raw.vibe : 0,
+    responsa: typeof raw.responsa === 'number' ? raw.responsa : 0,
+    level: (raw.level as UserLevel) || UserLevel.OBSERVADOR,
+    badges: Array.isArray(raw.badges) ? raw.badges.map(String) : [],
+    isAdmin: Boolean(raw.isAdmin),
+    hasNotifications: Boolean(raw.hasNotifications),
+    readNotificationIds: Array.isArray(raw.readNotificationIds) ? raw.readNotificationIds.map(String) : [],
+    neighborhood: raw.neighborhood ? String(raw.neighborhood) : undefined,
+    instagram: raw.instagram ? String(raw.instagram) : undefined,
+    joinedDate: raw.joinedDate ? String(raw.joinedDate) : undefined,
+    completedChallenges: Array.isArray(raw.completedChallenges) ? raw.completedChallenges.map(String) : [],
+    googleLinked: Boolean(raw.googleLinked),
+    emailVerified: Boolean(raw.emailVerified)
+  };
+}
+
+export function normalizePhoto(raw: any): PhotoBase {
+  return {
+    id: String(raw.id || ''),
+    userId: String(raw.userId || ''),
+    authorName: String(raw.authorName || 'Artista Anônimo'),
+    title: String(raw.title || 'Sem título'),
+    imageUrl: String(raw.imageUrl || ''),
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : ['#Palmas', '#ArteDeRua'],
+    vibeCount: typeof raw.vibeCount === 'number' ? raw.vibeCount : 0,
+    isGoldStandard: Boolean(raw.isGoldStandard),
+    type: raw.type === 'remix' ? 'remix' : 'base',
+    originalPhotoId: raw.originalPhotoId || raw.original_image_id ? String(raw.originalPhotoId || raw.original_image_id) : undefined,
+    location: raw.location && typeof raw.location === 'object' ? {
+      lat: typeof raw.location.lat === 'number' ? raw.location.lat : -10.2450,
+      lng: typeof raw.location.lng === 'number' ? raw.location.lng : -48.3250,
+      neighborhood: String(raw.location.neighborhood || 'Palmas'),
+      address: raw.location.address ? String(raw.location.address) : undefined,
+      landmark: raw.location.landmark ? String(raw.location.landmark) : undefined
+    } : undefined,
+    battleWins: typeof raw.battleWins === 'number' ? raw.battleWins : 0,
+    battleLosses: typeof raw.battleLosses === 'number' ? raw.battleLosses : 0,
+    battleStreak: typeof raw.battleStreak === 'number' ? raw.battleStreak : 0,
+    challengeId: raw.challengeId ? String(raw.challengeId) : undefined,
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now()
+  };
+}
+
+export function normalizeGraffitiSpot(raw: any): GraffitiSpot {
+  return {
+    id: String(raw.id || ''),
+    userId: String(raw.userId || ''),
+    userName: String(raw.userName || 'Muralista'),
+    title: String(raw.title || 'Mural Urbano'),
+    description: String(raw.description || ''),
+    type: raw.type === 'sugerido' ? 'sugerido' : 'permitido',
+    lat: typeof raw.lat === 'number' ? raw.lat : -10.2450,
+    lng: typeof raw.lng === 'number' ? raw.lng : -48.3250,
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+    address: raw.address ? String(raw.address) : undefined,
+    neighborhood: raw.neighborhood ? String(raw.neighborhood) : undefined
+  };
+}
+
+export function normalizeComment(raw: any): Comment {
+  return {
+    id: String(raw.id || ''),
+    targetId: String(raw.targetId || ''),
+    targetType: raw.targetType === 'spot' ? 'spot' : 'photo',
+    userId: String(raw.userId || ''),
+    userName: String(raw.userName || 'Comunidade'),
+    userAvatar: String(raw.userAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=400&q=80'),
+    text: String(raw.text || ''),
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+    likes: typeof raw.likes === 'number' ? raw.likes : 0
+  };
+}
+
+export function normalizeChallenge(raw: any): WeeklyChallenge {
+  return {
+    id: String(raw.id || ''),
+    title: String(raw.title || 'Desafio Urbano'),
+    subtitle: String(raw.subtitle || ''),
+    theme: String(raw.theme || 'Cultura de Quebrada'),
+    description: String(raw.description || ''),
+    bannerUrl: String(raw.bannerUrl || 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=1200&q=80'),
+    startDate: String(raw.startDate || ''),
+    endDate: String(raw.endDate || ''),
+    rewardResponsa: typeof raw.rewardResponsa === 'number' ? raw.rewardResponsa : 50,
+    rewardBadgeId: String(raw.rewardBadgeId || 'click'),
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
+    featuredNeighborhood: raw.featuredNeighborhood ? String(raw.featuredNeighborhood) : undefined,
+    status: raw.status === 'upcoming' || raw.status === 'completed' ? raw.status : 'active',
+    rules: Array.isArray(raw.rules) ? raw.rules.map(String) : [],
+    winnerPhotoId: raw.winnerPhotoId ? String(raw.winnerPhotoId) : undefined
+  };
+}
+
+export function normalizeNotification(raw: any): RemixNotification {
+  return {
+    id: String(raw.id || ''),
+    recipientUserId: String(raw.recipientUserId || ''),
+    remixerId: String(raw.remixerId || ''),
+    remixerName: String(raw.remixerName || 'Artista'),
+    remixerAvatar: raw.remixerAvatar ? String(raw.remixerAvatar) : undefined,
+    remixerNeighborhood: raw.remixerNeighborhood ? String(raw.remixerNeighborhood) : undefined,
+    originalPhotoId: String(raw.originalPhotoId || ''),
+    originalPhotoTitle: String(raw.originalPhotoTitle || ''),
+    originalPhotoUrl: raw.originalPhotoUrl ? String(raw.originalPhotoUrl) : undefined,
+    remixPhotoId: String(raw.remixPhotoId || ''),
+    remixPhotoTitle: String(raw.remixPhotoTitle || ''),
+    remixPhotoUrl: String(raw.remixPhotoUrl || ''),
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+    read: Boolean(raw.read)
+  };
+}
+
+export function normalizeBadge(raw: any): Badge {
+  return {
+    id: String(raw.id || ''),
+    name: String(raw.name || ''),
+    icon: String(raw.icon || 'Sparkles'),
+    description: String(raw.description || ''),
+    category: raw.category || 'special',
+    secret: Boolean(raw.secret),
+    unlockCriteria: raw.unlockCriteria ? String(raw.unlockCriteria) : undefined,
+    rewardResponsa: typeof raw.rewardResponsa === 'number' ? raw.rewardResponsa : 10,
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now()
+  };
+}
+
+/**
+ * Recursive Sanitizer for Firestore
+ * Strips all properties with `undefined` values so Firestore setDoc/updateDoc never throws "Unsupported field value: undefined".
+ */
+export function cleanUndefined<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map(item => cleanUndefined(item)) as unknown as T;
+  }
+  if (typeof data === 'object' && !(data instanceof Date)) {
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined) {
+        cleaned[key] = cleanUndefined(value);
+      }
+    }
+    return cleaned as T;
+  }
+  return data;
+}
+
+// Initial Seeding to Firestore only executed once if collections are empty
+let isSeedingAttempted = false;
+
 export async function seedInitialFirestoreData() {
+  if (isSeedingAttempted) return;
+  isSeedingAttempted = true;
+
   try {
-    const usersSnap = await getDocs(collection(db, 'users'));
-    if (usersSnap.empty) {
-      console.log('Seeding initial users to Firestore...');
+    const usersSnap = await getDocs(collection(db, 'users')).catch(() => null);
+    if (usersSnap && usersSnap.empty) {
       for (const u of INITIAL_USERS) {
-        await setDoc(doc(db, 'users', u.id), u).catch(() => {});
+        await setDoc(doc(db, 'users', u.id), cleanUndefined(u)).catch(() => {});
       }
     }
   } catch (_) {}
 
   try {
-    const photosSnap = await getDocs(collection(db, 'photos'));
-    if (photosSnap.empty) {
-      console.log('Seeding initial photos to Firestore...');
+    const photosSnap = await getDocs(collection(db, 'photos')).catch(() => null);
+    if (photosSnap && photosSnap.empty) {
       for (const p of INITIAL_PHOTOS) {
-        await setDoc(doc(db, 'photos', p.id), p).catch(() => {});
+        await setDoc(doc(db, 'photos', p.id), cleanUndefined(p)).catch(() => {});
       }
     }
   } catch (_) {}
 
   try {
-    const spotsSnap = await getDocs(collection(db, 'graffitiSpots'));
-    if (spotsSnap.empty) {
-      console.log('Seeding initial graffiti spots to Firestore...');
+    const spotsSnap = await getDocs(collection(db, 'graffitiSpots')).catch(() => null);
+    if (spotsSnap && spotsSnap.empty) {
       for (const s of INITIAL_GRAFFITI_SPOTS) {
-        await setDoc(doc(db, 'graffitiSpots', s.id), s).catch(() => {});
+        await setDoc(doc(db, 'graffitiSpots', s.id), cleanUndefined(s)).catch(() => {});
       }
     }
   } catch (_) {}
 
   try {
-    const commentsSnap = await getDocs(collection(db, 'comments'));
-    if (commentsSnap.empty) {
-      console.log('Seeding initial comments to Firestore...');
+    const commentsSnap = await getDocs(collection(db, 'comments')).catch(() => null);
+    if (commentsSnap && commentsSnap.empty) {
       for (const c of INITIAL_COMMENTS) {
-        await setDoc(doc(db, 'comments', c.id), c).catch(() => {});
+        await setDoc(doc(db, 'comments', c.id), cleanUndefined(c)).catch(() => {});
       }
     }
   } catch (_) {}
 
   try {
-    const challengesSnap = await getDocs(collection(db, 'challenges'));
-    if (challengesSnap.empty) {
-      console.log('Seeding initial challenges to Firestore...');
+    const challengesSnap = await getDocs(collection(db, 'challenges')).catch(() => null);
+    if (challengesSnap && challengesSnap.empty) {
       for (const ch of INITIAL_WEEKLY_CHALLENGES) {
-        await setDoc(doc(db, 'challenges', ch.id), ch).catch(() => {});
+        await setDoc(doc(db, 'challenges', ch.id), cleanUndefined(ch)).catch(() => {});
       }
     }
   } catch (_) {}
 
   try {
-    const badgesSnap = await getDocs(collection(db, 'badges'));
-    if (badgesSnap.empty) {
-      console.log('Seeding initial badges to Firestore...');
+    const badgesSnap = await getDocs(collection(db, 'badges')).catch(() => null);
+    if (badgesSnap && badgesSnap.empty) {
       for (const b of BADGES) {
-        await setDoc(doc(db, 'badges', b.id), b).catch(() => {});
+        await setDoc(doc(db, 'badges', b.id), cleanUndefined(b)).catch(() => {});
       }
     }
   } catch (_) {}
 }
 
-// Subscribe to real-time updates from Firestore
+/**
+ * Subscribe to real-time updates from Firestore
+ * Single Source of Truth: Data received from snapshots is normalized and passed directly to state.
+ */
 export function subscribeToFirestore(callbacks: {
   onUsers: (users: User[]) => void;
   onPhotos: (photos: PhotoBase[]) => void;
@@ -93,71 +284,84 @@ export function subscribeToFirestore(callbacks: {
 }) {
   const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
     if (!snap.empty) {
-      const items = snap.docs.map(d => d.data() as User);
+      const items = snap.docs.map(d => normalizeUser({ id: d.id, ...d.data() }));
       callbacks.onUsers(items);
     }
   }, (err) => {
-    handleFirestoreError(err, OperationType.GET, 'users');
+    if (err.code !== 'permission-denied') {
+      handleFirestoreError(err, OperationType.GET, 'users');
+    }
   });
 
   const unsubPhotos = onSnapshot(collection(db, 'photos'), (snap) => {
     if (!snap.empty) {
-      const items = snap.docs.map(d => d.data() as PhotoBase);
+      const items = snap.docs.map(d => normalizePhoto({ id: d.id, ...d.data() }));
       callbacks.onPhotos(items);
     }
   }, (err) => {
-    handleFirestoreError(err, OperationType.GET, 'photos');
+    if (err.code !== 'permission-denied') {
+      handleFirestoreError(err, OperationType.GET, 'photos');
+    }
   });
 
   const unsubSpots = onSnapshot(collection(db, 'graffitiSpots'), (snap) => {
     if (!snap.empty) {
-      const items = snap.docs.map(d => d.data() as GraffitiSpot);
+      const items = snap.docs.map(d => normalizeGraffitiSpot({ id: d.id, ...d.data() }));
       callbacks.onSpots(items);
     }
   }, (err) => {
-    handleFirestoreError(err, OperationType.GET, 'graffitiSpots');
+    if (err.code !== 'permission-denied') {
+      handleFirestoreError(err, OperationType.GET, 'graffitiSpots');
+    }
   });
 
   const unsubComments = onSnapshot(collection(db, 'comments'), (snap) => {
     if (!snap.empty) {
-      const items = snap.docs.map(d => d.data() as Comment);
-      // Sort newest first
+      const items = snap.docs.map(d => normalizeComment({ id: d.id, ...d.data() }));
       items.sort((a, b) => b.createdAt - a.createdAt);
       callbacks.onComments(items);
     }
   }, (err) => {
-    handleFirestoreError(err, OperationType.GET, 'comments');
+    if (err.code !== 'permission-denied') {
+      handleFirestoreError(err, OperationType.GET, 'comments');
+    }
   });
 
   const unsubChallenges = onSnapshot(collection(db, 'challenges'), (snap) => {
     if (!snap.empty) {
-      const items = snap.docs.map(d => d.data() as WeeklyChallenge);
+      const items = snap.docs.map(d => normalizeChallenge({ id: d.id, ...d.data() }));
       callbacks.onChallenges(items);
     }
   }, (err) => {
-    handleFirestoreError(err, OperationType.GET, 'challenges');
+    if (err.code !== 'permission-denied') {
+      handleFirestoreError(err, OperationType.GET, 'challenges');
+    }
   });
 
   const unsubNotifications = callbacks.onNotifications 
     ? onSnapshot(collection(db, 'notifications'), (snap) => {
         if (!snap.empty) {
-          const items = snap.docs.map(d => d.data() as RemixNotification);
+          const items = snap.docs.map(d => normalizeNotification({ id: d.id, ...d.data() }));
           items.sort((a, b) => b.createdAt - a.createdAt);
           callbacks.onNotifications?.(items);
         }
       }, (err) => {
-        handleFirestoreError(err, OperationType.GET, 'notifications');
+        if (err.code !== 'permission-denied') {
+          handleFirestoreError(err, OperationType.GET, 'notifications');
+        }
       })
     : () => {};
 
   const unsubBadges = callbacks.onBadges
     ? onSnapshot(collection(db, 'badges'), (snap) => {
         if (!snap.empty) {
-          const items = snap.docs.map(d => d.data() as Badge);
+          const items = snap.docs.map(d => normalizeBadge({ id: d.id, ...d.data() }));
           callbacks.onBadges?.(items);
         }
       }, (err) => {
-        handleFirestoreError(err, OperationType.GET, 'badges');
+        if (err.code !== 'permission-denied') {
+          handleFirestoreError(err, OperationType.GET, 'badges');
+        }
       })
     : () => {};
 
@@ -172,108 +376,133 @@ export function subscribeToFirestore(callbacks: {
   };
 }
 
-// Data Mutation Operations
-export async function persistUser(user: User) {
+/**
+ * Data Mutation Operations with Exponential Backoff and Deep Undefined-Stripping
+ */
+export async function persistUser(user: User): Promise<void> {
   try {
-    await setDoc(doc(db, 'users', user.id), user, { merge: true });
+    const payload = cleanUndefined(user);
+    await withRetry(() => setDoc(doc(db, 'users', user.id), payload, { merge: true }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${user.id}`);
+    throw error;
   }
 }
 
-export async function persistPhoto(photo: PhotoBase) {
+export async function persistPhoto(photo: PhotoBase): Promise<void> {
   try {
-    await setDoc(doc(db, 'photos', photo.id), photo);
+    const payload = cleanUndefined(photo);
+    await withRetry(() => setDoc(doc(db, 'photos', photo.id), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `photos/${photo.id}`);
+    throw error;
   }
 }
 
-export async function updatePhotoInFirestore(photoId: string, updates: Partial<PhotoBase>) {
+export async function updatePhotoInFirestore(photoId: string, updates: Partial<PhotoBase>): Promise<void> {
   try {
-    await updateDoc(doc(db, 'photos', photoId), updates);
+    const payload = cleanUndefined(updates);
+    await withRetry(() => updateDoc(doc(db, 'photos', photoId), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `photos/${photoId}`);
+    throw error;
   }
 }
 
-export async function deletePhotoFromFirestore(photoId: string) {
+export async function deletePhotoFromFirestore(photoId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'photos', photoId));
+    await withRetry(() => deleteDoc(doc(db, 'photos', photoId)));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `photos/${photoId}`);
+    throw error;
   }
 }
 
-export async function persistComment(comment: Comment) {
+export async function persistComment(comment: Comment): Promise<void> {
   try {
-    await setDoc(doc(db, 'comments', comment.id), comment);
+    const payload = cleanUndefined(comment);
+    await withRetry(() => setDoc(doc(db, 'comments', comment.id), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `comments/${comment.id}`);
+    throw error;
   }
 }
 
-export async function persistSpot(spot: GraffitiSpot) {
+export async function persistSpot(spot: GraffitiSpot): Promise<void> {
   try {
-    await setDoc(doc(db, 'graffitiSpots', spot.id), spot);
+    const payload = cleanUndefined(spot);
+    await withRetry(() => setDoc(doc(db, 'graffitiSpots', spot.id), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `graffitiSpots/${spot.id}`);
+    throw error;
   }
 }
 
-export async function deleteSpotFromFirestore(spotId: string) {
+export async function deleteSpotFromFirestore(spotId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'graffitiSpots', spotId));
+    await withRetry(() => deleteDoc(doc(db, 'graffitiSpots', spotId)));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `graffitiSpots/${spotId}`);
+    throw error;
   }
 }
 
-export async function persistChallenge(challenge: WeeklyChallenge) {
+export async function persistChallenge(challenge: WeeklyChallenge): Promise<void> {
   try {
-    await setDoc(doc(db, 'challenges', challenge.id), challenge, { merge: true });
+    const payload = cleanUndefined(challenge);
+    await withRetry(() => setDoc(doc(db, 'challenges', challenge.id), payload, { merge: true }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `challenges/${challenge.id}`);
+    throw error;
   }
 }
 
-export async function deleteChallengeFromFirestore(challengeId: string) {
+export async function deleteChallengeFromFirestore(challengeId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'challenges', challengeId));
+    await withRetry(() => deleteDoc(doc(db, 'challenges', challengeId)));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `challenges/${challengeId}`);
+    throw error;
   }
 }
 
-export async function persistNotification(notification: RemixNotification) {
+export async function persistNotification(notification: RemixNotification): Promise<void> {
   try {
-    await setDoc(doc(db, 'notifications', notification.id), notification);
+    const payload = cleanUndefined(notification);
+    await withRetry(() => setDoc(doc(db, 'notifications', notification.id), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `notifications/${notification.id}`);
+    throw error;
   }
 }
 
-export async function updateNotificationInFirestore(notificationId: string, updates: Partial<RemixNotification>) {
+export async function updateNotificationInFirestore(notificationId: string, updates: Partial<RemixNotification>): Promise<void> {
   try {
-    await updateDoc(doc(db, 'notifications', notificationId), updates);
+    const payload = cleanUndefined(updates);
+    await withRetry(() => updateDoc(doc(db, 'notifications', notificationId), payload));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `notifications/${notificationId}`);
+    throw error;
   }
 }
 
-export async function persistBadge(badge: Badge) {
+export async function persistBadge(badge: Badge): Promise<void> {
   try {
-    await setDoc(doc(db, 'badges', badge.id), badge, { merge: true });
+    const payload = cleanUndefined(badge);
+    await withRetry(() => setDoc(doc(db, 'badges', badge.id), payload, { merge: true }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `badges/${badge.id}`);
+    throw error;
   }
 }
 
-export async function deleteBadgeFromFirestore(badgeId: string) {
+export async function deleteBadgeFromFirestore(badgeId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'badges', badgeId));
+    await withRetry(() => deleteDoc(doc(db, 'badges', badgeId)));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `badges/${badgeId}`);
+    throw error;
   }
 }
+
 

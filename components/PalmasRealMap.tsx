@@ -158,22 +158,51 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
   const navigate = useNavigate();
   const googleApiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
   // Default to OpenStreetMap to prevent ApiTargetBlockedMapError when the project key has API restrictions
-  const [useGoogleMaps, setUseGoogleMaps] = useState<boolean>(false);
-  const [googleMapsBlocked, setGoogleMapsBlocked] = useState<boolean>(false);
-  const [googleMapsErrorMsg, setGoogleMapsErrorMsg] = useState<string | null>(null);
+  const [useGoogleMaps, setUseGoogleMaps] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('gmaps_blocked') !== 'true' && false;
+    } catch {
+      return false;
+    }
+  });
+  const [googleMapsBlocked, setGoogleMapsBlocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('gmaps_blocked') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [googleMapsErrorMsg, setGoogleMapsErrorMsg] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('gmaps_blocked') === 'true'
+        ? 'A chave de API configurada no projeto possui restrições que bloqueiam a "Maps JavaScript API" (ApiTargetBlockedMapError). O mapa está ativo e funcionando via OpenStreetMap.'
+        : null;
+    } catch {
+      return null;
+    }
+  });
 
   // Catch any Google Maps authentication / API target restriction errors globally
   useEffect(() => {
-    const prevAuthFailure = (window as unknown as { gm_authFailure?: () => void }).gm_authFailure;
-    (window as unknown as { gm_authFailure?: () => void }).gm_authFailure = () => {
+    const handleAuthFailure = () => {
       console.warn('Google Maps API auth/restriction error detected (ApiTargetBlockedMapError). Falling back to OpenStreetMap.');
+      try {
+        sessionStorage.setItem('gmaps_blocked', 'true');
+      } catch {}
       setGoogleMapsBlocked(true);
       setGoogleMapsErrorMsg('A chave de API configurada no projeto possui restrições que bloqueiam a "Maps JavaScript API" (ApiTargetBlockedMapError). O mapa continuará funcionando via OpenStreetMap.');
       setUseGoogleMaps(false);
+    };
+
+    window.addEventListener('gmaps_auth_failure', handleAuthFailure);
+    const prevAuthFailure = (window as unknown as { gm_authFailure?: () => void }).gm_authFailure;
+    (window as unknown as { gm_authFailure?: () => void }).gm_authFailure = () => {
+      handleAuthFailure();
       if (prevAuthFailure) prevAuthFailure();
     };
 
     return () => {
+      window.removeEventListener('gmaps_auth_failure', handleAuthFailure);
       (window as unknown as { gm_authFailure?: () => void }).gm_authFailure = prevAuthFailure;
     };
   }, []);
@@ -794,15 +823,18 @@ export const PalmasRealMap: React.FC<PalmasRealMapProps> = ({
 
       {/* MAP VIEW CONTAINER */}
       <div className="relative h-[65vh] min-h-[500px] w-full rounded-[3rem] overflow-hidden border-8 border-white shadow-2xl bg-gray-100">
-        {useGoogleMaps && googleApiKey ? (
+        {useGoogleMaps && googleApiKey && !googleMapsBlocked ? (
           // ================= GOOGLE MAPS ENGINE =================
           <APIProvider 
             apiKey={googleApiKey} 
             libraries={['marker']}
             onError={(err) => {
               console.warn('Google Maps API failed to load:', err);
+              try {
+                sessionStorage.setItem('gmaps_blocked', 'true');
+              } catch {}
               setGoogleMapsBlocked(true);
-              setGoogleMapsErrorMsg('A chave de API não pôde inicializar a Maps JavaScript API. Alternando automaticamente para OpenStreetMap.');
+              setGoogleMapsErrorMsg('A chave de API não pôde inicializar a Maps JavaScript API (ApiTargetBlockedMapError). Alternando automaticamente para OpenStreetMap.');
               setUseGoogleMaps(false);
             }}
           >

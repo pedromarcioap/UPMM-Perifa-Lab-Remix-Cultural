@@ -42,7 +42,6 @@ import {
   Tag,
   Bell
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { INITIAL_USERS, INITIAL_PHOTOS, INITIAL_GRAFFITI_SPOTS, INITIAL_COMMENTS, INITIAL_WEEKLY_CHALLENGES, COLORS, BADGES, PRESET_TAGS } from './constants';
 import { User, PhotoBase, UserLevel, GraffitiSpot, Comment, WeeklyChallenge, RemixNotification, Badge } from './types';
 import Editor from './components/Editor';
@@ -205,16 +204,11 @@ const App: React.FC = () => {
     // 1. Seed initial data to Firestore if empty
     seedInitialFirestoreData();
 
-    // 2. Real-time subscription to Firestore collections
+    // 2. Real-time subscription to Firestore collections (Single Source of Truth)
     const unsubscribeFirestore = subscribeToFirestore({
       onUsers: (firestoreUsers) => {
         if (firestoreUsers.length > 0) {
-          setUsers(() => {
-            const map = new Map<string, User>();
-            INITIAL_USERS.forEach(u => map.set(u.id, u));
-            firestoreUsers.forEach(u => map.set(u.id, u));
-            return Array.from(map.values());
-          });
+          setUsers(firestoreUsers);
         }
       },
       onPhotos: (firestorePhotos) => {
@@ -547,28 +541,49 @@ const App: React.FC = () => {
   };
 
   const handleLike = (photoId: string) => {
-    requireLogin(() => {
+    requireLogin(async () => {
+      // Snapshot state for optimistic rollback
+      const previousPhotos = [...photos];
+      const previousUser = currentUser ? { ...currentUser } : null;
+
       let nextVibes = 1;
       setPhotos(prev => prev.map(p => {
         if (p.id === photoId) {
-          nextVibes = p.vibeCount + 1;
+          nextVibes = (p.vibeCount || 0) + 1;
           return { ...p, vibeCount: nextVibes };
         }
         return p;
       }));
-      updatePhotoInFirestore(photoId, { vibeCount: nextVibes });
 
+      let updatedUser: User | null = null;
       if (currentUser) {
-        const updatedUser = { ...currentUser, vibe: currentUser.vibe + 1 };
+        updatedUser = { ...currentUser, vibe: (currentUser.vibe || 0) + 1 };
         setCurrentUser(updatedUser);
-        setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
-        persistUser(updatedUser);
+        setUsers(prev => prev.map(u => u.id === updatedUser!.id ? updatedUser! : u));
+      }
+
+      try {
+        await updatePhotoInFirestore(photoId, { vibeCount: nextVibes });
+        if (updatedUser) {
+          await persistUser(updatedUser);
+        }
+      } catch (err) {
+        console.warn("Falha na sincronização do like com Firestore. Revertendo estado local:", err);
+        setPhotos(previousPhotos);
+        if (previousUser) {
+          setCurrentUser(previousUser);
+          setUsers(prev => prev.map(u => u.id === previousUser.id ? previousUser : u));
+        }
       }
     });
   };
 
   const handleVoteBattle = (winnerId: string, loserId: string) => {
-    requireLogin(() => {
+    requireLogin(async () => {
+      // Snapshot state for optimistic rollback
+      const previousPhotos = [...photos];
+      const previousUser = currentUser ? { ...currentUser } : null;
+
       let winnerWins = 1;
       let winnerStreak = 1;
       let loserLosses = 1;
@@ -579,7 +594,7 @@ const App: React.FC = () => {
           winnerStreak = (p.battleStreak || 0) + 1;
           return {
             ...p,
-            vibeCount: p.vibeCount + 1,
+            vibeCount: (p.vibeCount || 0) + 1,
             battleWins: winnerWins,
             battleStreak: winnerStreak
           };
@@ -595,27 +610,38 @@ const App: React.FC = () => {
         return p;
       }));
 
-      // Update both photos in Firestore
-      updatePhotoInFirestore(winnerId, { 
-        battleWins: winnerWins, 
-        battleStreak: winnerStreak 
-      });
-      updatePhotoInFirestore(loserId, { 
-        battleLosses: loserLosses, 
-        battleStreak: 0 
-      });
-
+      let updatedUser: User | null = null;
       if (currentUser) {
         const newBadges = Array.from(new Set([...currentUser.badges, 'battle_juror']));
-        const updatedUser = { 
+        updatedUser = { 
           ...currentUser, 
-          responsa: currentUser.responsa + 5,
-          vibe: currentUser.vibe + 1,
+          responsa: (currentUser.responsa || 0) + 5,
+          vibe: (currentUser.vibe || 0) + 1,
           badges: newBadges
         };
         setCurrentUser(updatedUser);
-        setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
-        persistUser(updatedUser);
+        setUsers(prev => prev.map(u => u.id === updatedUser!.id ? updatedUser! : u));
+      }
+
+      try {
+        await updatePhotoInFirestore(winnerId, { 
+          battleWins: winnerWins, 
+          battleStreak: winnerStreak 
+        });
+        await updatePhotoInFirestore(loserId, { 
+          battleLosses: loserLosses, 
+          battleStreak: 0 
+        });
+        if (updatedUser) {
+          await persistUser(updatedUser);
+        }
+      } catch (err) {
+        console.warn("Falha na sincronização do voto de batalha com Firestore. Revertendo estado local:", err);
+        setPhotos(previousPhotos);
+        if (previousUser) {
+          setCurrentUser(previousUser);
+          setUsers(prev => prev.map(u => u.id === previousUser.id ? previousUser : u));
+        }
       }
     });
   };
@@ -2605,16 +2631,14 @@ const UploadModal: React.FC<{
   };
 
   const handlePexelsSearch = async () => { 
-    if (!pexelsQuery) return; 
+    if (!pexelsQuery.trim()) return; 
     setIsSearching(true); 
     try { 
-      const res = await fetch(`https://api.pexels.com/v1/search?query=${pexelsQuery}&per_page=12`, { 
-        headers: { Authorization: 'qMrS3C0ABLzqDVYZzw1X3PM0eJyRz2u5Pdg20MSN2Y7LAxxdP3NsRoll' } 
-      }); 
+      const res = await fetch(`/api/pexels/search?query=${encodeURIComponent(pexelsQuery.trim())}&per_page=12`); 
       const data = await res.json(); 
       setPexelsResults(data.photos || []); 
     } catch (e) { 
-      console.error(e); 
+      console.error("Erro ao buscar no proxy do Pexels:", e); 
     } finally { 
       setIsSearching(false); 
     } 
